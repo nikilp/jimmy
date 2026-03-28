@@ -1,0 +1,7 @@
+.git
+.github
+README.md
+scripts
+site
+deploy/server
+deploy/nginx/jimmy.outfinity.net.conf

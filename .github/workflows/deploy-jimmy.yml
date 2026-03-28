@@ -1,0 +1,72 @@
+name: Deploy Jimmy Site
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: jimmy-production
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build site
+        run: python3 scripts/build_site.py
+
+      - name: Validate site
+        run: python3 scripts/check_site.py dist
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build site
+        run: python3 scripts/build_site.py
+
+      - name: Validate site
+        run: python3 scripts/check_site.py dist
+
+      - name: Create release archive
+        run: tar -czf /tmp/jimmy-site.tgz dist Dockerfile deploy/nginx/container.default.conf
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Copy deploy assets
+        run: |
+          scp -o StrictHostKeyChecking=no \
+            /tmp/jimmy-site.tgz \
+            deploy/server/deploy-jimmy.sh \
+            "${EC2_USER}@${EC2_HOST}:/tmp/"
+
+      - name: Run deploy script
+        run: |
+          ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+            "chmod +x /tmp/deploy-jimmy.sh && /tmp/deploy-jimmy.sh /tmp/jimmy-site.tgz"
+
+      - name: Public health check
+        run: curl -fsS https://jimmy.outfinity.net/healthz/
