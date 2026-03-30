@@ -31,6 +31,9 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     env:
+      EC2_APP_ROOT: ${{ vars.EC2_APP_ROOT || '/home/ubuntu/projects/jimmy' }}
+      EC2_APP_PORT: ${{ vars.EC2_APP_PORT || '18503' }}
+      EC2_HEALTH_PATH: ${{ vars.EC2_HEALTH_PATH || '/healthz/' }}
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ${{ secrets.EC2_USER }}
     steps:
@@ -66,7 +69,13 @@ jobs:
       - name: Run deploy script
         run: |
           ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
-            "chmod +x /tmp/deploy-jimmy.sh && /tmp/deploy-jimmy.sh /tmp/jimmy-site.tgz"
+            "chmod +x /tmp/deploy-jimmy.sh && \
+             APP_ROOT='${EC2_APP_ROOT}' \
+             APP_PORT='${EC2_APP_PORT}' \
+             HEALTH_PATH='${EC2_HEALTH_PATH}' \
+             /tmp/deploy-jimmy.sh /tmp/jimmy-site.tgz"
 
-      - name: Public health check
-        run: curl -fsS https://jimmy.outfinity.net/healthz/
+      - name: Target host health check
+        run: |
+          ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+            "curl -fsS http://127.0.0.1:${EC2_APP_PORT}${EC2_HEALTH_PATH} >/dev/null && echo 'Jimmy healthy'"
