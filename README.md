@@ -24,19 +24,26 @@ Then open `http://localhost:8000/`.
 
 The repo is set up for GitHub Actions deployment to the existing EC2 instance.
 
-Required repository secrets:
+It deploys over AWS Systems Manager (SSM), so the runner never opens an SSH
+connection to the host.
 
-- `EC2_HOST`
-- `EC2_USER`
-- `EC2_SSH_KEY`
+Required repository settings:
+
+- secret `AWS_ROLE_TO_ASSUME`: `arn:aws:iam::599019184800:role/github-actions-jimmy-deploy`
+- secret `EC2_INSTANCE_ID`: the shared host
+- variable `DEPLOY_ARTIFACTS_BUCKET`: where deploy bundles are staged
+
+The role, the bucket and their permissions are defined in
+`outfinity-ops` (`terraform/deploy-access`).
 
 The deploy workflow:
 
 1. Builds `dist/`
 2. Validates links and assets
-3. Uploads a release bundle over SSH
-4. Builds the Docker image on EC2
-5. Restarts the `jimmy-site` container on `127.0.0.1:18503`
+3. Uploads a release bundle to S3
+4. Runs `deploy/ssm/remote-deploy.sh` on the host over SSM, which builds the
+   Docker image there with `deploy/server/deploy-jimmy.sh`
+5. Restarts the `jimmy-site` container on `127.0.0.1:18503` and checks health
 
 Server-side nginx should proxy `jimmy.outfinity.net` to `127.0.0.1:18503`.
 

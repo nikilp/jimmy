@@ -30,12 +30,19 @@ jobs:
   deploy:
     needs: verify
     runs-on: ubuntu-latest
+    # Deploys over SSM: the runner never connects to the host, so port 22 does
+    # not have to be open to GitHub's runners. id-token lets it assume the
+    # deploy role with OIDC; there are no long-lived AWS keys.
+    permissions:
+      id-token: write
+      contents: read
     env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+      DEPLOY_ARTIFACTS_BUCKET: ${{ vars.DEPLOY_ARTIFACTS_BUCKET }}
       EC2_APP_ROOT: ${{ vars.EC2_APP_ROOT || '/home/ubuntu/projects/jimmy' }}
       EC2_APP_PORT: ${{ vars.EC2_APP_PORT || '18503' }}
       EC2_HEALTH_PATH: ${{ vars.EC2_HEALTH_PATH || '/healthz/' }}
-      EC2_HOST: ${{ secrets.EC2_HOST }}
-      EC2_USER: ${{ secrets.EC2_USER }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,28 +61,30 @@ jobs:
       - name: Create release archive
         run: tar -czf /tmp/jimmy-site.tgz dist Dockerfile deploy/nginx/container.default.conf
 
-      - name: Setup SSH key
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Copy deploy assets
+      - name: Upload deploy bundle
+        id: bundle
         run: |
-          scp -o StrictHostKeyChecking=no \
-            /tmp/jimmy-site.tgz \
-            deploy/server/deploy-jimmy.sh \
-            "${EC2_USER}@${EC2_HOST}:/tmp/"
+          test -n "$INSTANCE_ID" || { echo "EC2_INSTANCE_ID secret is not set" >&2; exit 1; }
+          test -n "$DEPLOY_ARTIFACTS_BUCKET" || { echo "DEPLOY_ARTIFACTS_BUCKET variable is not set" >&2; exit 1; }
+          # What scp used to copy: the site archive and the host-side script.
+          tar -czf /tmp/bundle.tgz -C /tmp jimmy-site.tgz -C "$GITHUB_WORKSPACE/deploy/server" deploy-jimmy.sh
+          uri="s3://${DEPLOY_ARTIFACTS_BUCKET}/jimmy/${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}.tgz"
+          aws s3 cp /tmp/bundle.tgz "$uri" --only-show-errors
+          echo "uri=$uri" >> "$GITHUB_OUTPUT"
 
-      - name: Run deploy script
+      - name: Deploy over SSM and check health
+        env:
+          BUNDLE_URI: ${{ steps.bundle.outputs.uri }}
         run: |
-          ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
-            "chmod +x /tmp/deploy-jimmy.sh && \
-             APP_ROOT='${EC2_APP_ROOT}' \
-             APP_PORT='${EC2_APP_PORT}' \
-             HEALTH_PATH='${EC2_HEALTH_PATH}' \
-             /tmp/deploy-jimmy.sh /tmp/jimmy-site.tgz"
-
-      - name: Target host health check
-        run: |
-          ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
-            "curl -fsS http://127.0.0.1:${EC2_APP_PORT}${EC2_HEALTH_PATH} >/dev/null && echo 'Jimmy healthy'"
+          scripts/ssm-run.sh "deploy jimmy ${GITHUB_SHA::7}" deploy/ssm/remote-deploy.sh 900 \
+            BUNDLE_URI="$BUNDLE_URI" \
+            AWS_REGION="$AWS_REGION" \
+            APP_ROOT="$EC2_APP_ROOT" \
+            APP_PORT="$EC2_APP_PORT" \
+            HEALTH_PATH="$EC2_HEALTH_PATH"
